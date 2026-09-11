@@ -630,6 +630,34 @@ async function cleanup(ctx, folder) {
 }
 // ---------------------------------------------------------------------------
 
+// --- history -----------------------------------------------------------------
+const HISTORY_PATH = path.join(os.homedir(), '.comicgrab', 'history.json');
+
+function readHistory() {
+  try { return JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8')); } catch { return []; }
+}
+
+/** Append one record per CBZ written. Same file for CLI and app. */
+async function recordHistory(ctx, entry) {
+  if (ctx.opts.noHistory) return;
+  try {
+    await fs.promises.mkdir(path.dirname(HISTORY_PATH), { recursive: true });
+    const list = readHistory().filter((e) => e.file !== entry.file); // one record per path
+    list.push({ when: new Date().toISOString(), ...entry });
+    await fs.promises.writeFile(HISTORY_PATH, JSON.stringify(list, null, 2));
+  } catch (e) {
+    ctx.warn(`history not saved (${e.message})`);
+  }
+}
+
+/** Skip work whose CBZ already exists, unless repairing or forcing. */
+function haveAlready(ctx, cbz) {
+  if (ctx.opts.force || ctx.opts.repair) return false;
+  if (!fs.existsSync(cbz)) return false;
+  ctx.emit('skip', { path: cbz, msg: `already have ${path.basename(cbz)} — skipped (force to re-download)` });
+  return true;
+}
+
 // --- runners ---------------------------------------------------------------
 /** Shared loop for webtoon episodes AND generic chapters. */
 async function runSeries(ctx, items, series, outRoot, sourceUrl, kind) {
@@ -641,6 +669,10 @@ async function runSeries(ctx, items, series, outRoot, sourceUrl, kind) {
   for (const [idx, { no, title, url }] of items.entries()) {
     ctx.check();
     ctx.emit('item', { index: idx + 1, total: items.length, no, title, msg: `${label} ${numTag(no)}: ${title}` });
+    if (!ctx.opts.oneCbz && haveAlready(ctx, path.join(outRoot, cbzName(ctx, series, no, title)))) {
+      made.push(path.join(outRoot, cbzName(ctx, series, no, title)));
+      continue;
+    }
     let urls;
     if (kind === 'webtoon') {
       urls = webtoonSlices(await ctx.dom(url));
@@ -666,6 +698,7 @@ async function runSeries(ctx, items, series, outRoot, sourceUrl, kind) {
     await cleanup(ctx, chDir);
     made.push(cbz);
     ctx.emit('cbz', { path: cbz, msg: `wrote ${path.basename(cbz)}` });
+    await recordHistory(ctx, { series, title, number: no, file: cbz, pages: files.length, source: url, mode: kind });
   }
 
   if (ctx.opts.oneCbz && tagged.length) {
@@ -674,6 +707,7 @@ async function runSeries(ctx, items, series, outRoot, sourceUrl, kind) {
     for (const d of dirs) await cleanup(ctx, d);
     made.push(cbz);
     ctx.emit('cbz', { path: cbz, msg: `wrote ${path.basename(cbz)}` });
+    await recordHistory(ctx, { series, title: series, number: null, file: cbz, pages: tagged.length, source: sourceUrl, mode: `${kind}-merged` });
   }
   return made;
 }
@@ -692,6 +726,8 @@ async function runPlanned(ctx, planned, outRoot, sourceUrl) {
                        msg: `${g.title}: ${g.images.length} image(s)` });
     const dir = path.join(outRoot, safeName(g.title));
     const cbz = path.join(outRoot, cbzName(ctx, planned.series, g.no, g.title));
+
+    if (haveAlready(ctx, cbz)) { made.push(cbz); continue; }
 
     let items = g.images;
     let existing = [];
@@ -721,6 +757,8 @@ async function runPlanned(ctx, planned, outRoot, sourceUrl) {
     await cleanup(ctx, dir);
     made.push(cbz);
     ctx.emit('cbz', { path: cbz, msg: `wrote ${path.basename(cbz)}` });
+    await recordHistory(ctx, { series: planned.series, title: g.title, number: g.no, file: cbz, pages: files.length,
+                               source: sourceUrl, mode: `site:${planned.site || 'adapter'}` });
     if (g.extras?.length) {
       ctx.info(`${g.extras.length} non-image strip(s) → extras/`);
       await downloadFiles(ctx, g.extras, path.join(outRoot, 'extras'), referer);
@@ -730,6 +768,8 @@ async function runPlanned(ctx, planned, outRoot, sourceUrl) {
 }
 
 async function runGallery(ctx, url, outRoot, title) {
+  const cbzPath = path.join(outRoot, `${safeName(title)}.cbz`);
+  if (haveAlready(ctx, cbzPath)) return [cbzPath];
   ctx.info('scanning gallery…');
   const images = await collectImageUrls(ctx, url);
   if (!images.length) {
@@ -741,10 +781,11 @@ async function runGallery(ctx, url, outRoot, title) {
   const saved = await downloadImages(ctx, images, pages, url);
   if (!saved.length) throw new Error('Nothing was downloaded.');
   const files = await maybeStitch(ctx, saved);
-  const cbz = path.join(outRoot, `${safeName(title)}.cbz`);
+  const cbz = cbzPath;
   await makeCbz(files, cbz, { series: title, web: url, title });
   await cleanup(ctx, pages);
   ctx.emit('cbz', { path: cbz, msg: `wrote ${path.basename(cbz)}` });
+  await recordHistory(ctx, { series: title, title, number: null, file: cbz, pages: files.length, source: url, mode: 'gallery' });
   return [cbz];
 }
 
@@ -763,6 +804,7 @@ async function runWebtoonEpisode(ctx, url, $, base) {
   if (!urls.length) throw new Error('No slices found — Fast Pass-locked, deleted, or age-gated?');
   ctx.info(`series: ${series} — episode ${numTag(no)}: ${epTitle}`);
   const out = path.join(base, series);
+  if (haveAlready(ctx, path.join(out, cbzName(ctx, series, no, epTitle)))) return [path.join(out, cbzName(ctx, series, no, epTitle))];
   const pages = path.join(out, 'pages');
   const saved = await downloadImages(ctx, urls, pages, url);
   if (!saved.length) throw new Error('Nothing was downloaded.');
@@ -771,6 +813,7 @@ async function runWebtoonEpisode(ctx, url, $, base) {
   await makeCbz(files, cbz, { series, web: url, number: no, title: epTitle });
   await cleanup(ctx, pages);
   ctx.emit('cbz', { path: cbz, msg: `wrote ${path.basename(cbz)}` });
+  await recordHistory(ctx, { series, title: epTitle, number: no, file: cbz, pages: files.length, source: url, mode: 'webtoon-episode' });
   return [cbz];
 }
 // ---------------------------------------------------------------------------
@@ -789,6 +832,9 @@ async function runWebtoonEpisode(ctx, url, $, base) {
  *   signal     AbortSignal — abort to cancel; grab() rejects with CancelledError
  *   delay      ms between requests (default 500; site adapters may set their own)
  *   repair     site adapters: open an existing CBZ, fetch only the pages it's missing, rewrite it
+ *   force      re-download even when the CBZ already exists (default: skip existing)
+ *   group      site adapters: how to split ('year', 'storyline', …) — adapter-specific
+ *   noHistory  don't record written files in ~/.comicgrab/history.json
  *   onProgress ({type, msg, ...}) => void   types: info warn item download cbz
  *   fetchImpl  fetch-compatible function (Electron: net.fetch)
  *   renderPage async (url) => [imgUrl] — live-DOM fallback for JS-rendered readers
@@ -808,10 +854,12 @@ async function grab(inputUrl, opts = {}) {
   const adapter = SITE_ADAPTERS.find((a) => a.match(url));
   if (adapter) {
     const mode = `site:${adapter.name}`;
-    ctx.emit('mode', { mode, msg: `detected: ${adapter.label}` });
-    const planned = await adapter.plan(ctx, url);
+    const groupLabel = adapter.groups ? ` — one CBZ per ${opts.group || adapter.defaultGroup}` : '';
+    ctx.emit('mode', { mode, msg: `detected: ${adapter.label}${groupLabel}` });
+    const planned = await adapter.plan(ctx, url, { group: opts.group });
     const series = opts.name ? safeName(opts.name) : planned.series;
     planned.series = series;
+    planned.site = adapter.name;
     const files = await runPlanned(ctx, planned, path.join(base, series), url);
     ctx.emit('done', { files, msg: `done — ${files.length} CBZ file(s) under ${base}` });
     return { mode, series, outDir: base, files };
@@ -847,7 +895,7 @@ async function grab(inputUrl, opts = {}) {
 }
 
 module.exports = {
-  grab, classify, MODE_LABEL, HttpError, CancelledError, SITE_ADAPTERS,
+  grab, classify, MODE_LABEL, HttpError, CancelledError, SITE_ADAPTERS, readHistory, HISTORY_PATH,
   // exported for tests
   _internal: {
     safeName, cleanTitle, numTag, parseEpisodeSpec, largestFromSrcset,

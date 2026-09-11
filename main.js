@@ -11,7 +11,7 @@
 const path = require('path');
 const os = require('os');
 const { app, BrowserWindow, ipcMain, dialog, net, session, shell } = require('electron');
-const { grab, CancelledError } = require('./engine');
+const { grab, CancelledError, readHistory, SITE_ADAPTERS } = require('./engine');
 
 const DEFAULT_OUT = path.join(os.homedir(), 'Downloads', 'Comics');
 const RENDER_TIMEOUT = 60_000;
@@ -102,6 +102,9 @@ ipcMain.handle('grab', async (_e, params) => {
       oneCbz: !!params.oneCbz,
       keep: !!params.keep,
       numbered: !!params.numbered,
+      repair: !!params.repair,
+      force: !!params.force,
+      group: params.group || undefined,
       signal: controller.signal,
       onProgress: send,
       fetchImpl: (url, init) => net.fetch(url, init),
@@ -122,6 +125,16 @@ ipcMain.handle('cancel', () => {
 });
 
 ipcMain.handle('defaultDir', () => DEFAULT_OUT);
+
+ipcMain.handle('history', () => readHistory().slice().reverse());
+
+ipcMain.handle('groupOptions', (_e, url) => {
+  try {
+    const u = /^https?:\/\//i.test(url) ? url : 'https://' + url;
+    const a = SITE_ADAPTERS.find((x) => x.match(u));
+    return a?.groups ? { site: a.name, groups: a.groups, defaultGroup: a.defaultGroup } : null;
+  } catch { return null; }
+});
 
 ipcMain.handle('chooseDir', async (_e, current) => {
   const r = await dialog.showOpenDialog(win, {

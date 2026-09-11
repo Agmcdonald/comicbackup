@@ -119,7 +119,10 @@ async function stripAssets(ctx, date, comic) {
   return { images: [{ url: `${dir}/${stem}.${ft}`, name: `${date}.${ft}` }], extras: [] };
 }
 
-async function plan(ctx, url) {
+const GROUPS = ['year', 'storyline'];
+
+async function plan(ctx, url, { group = 'year' } = {}) {
+  if (!GROUPS.includes(group)) throw new Error(`bobandgeorge: group must be one of ${GROUPS.join(', ')}`);
   ctx.info('fetching the comic index from getData.php…');
   const comics = await (await ctx.fetch(`${API}?function=getComics&startDate=${FIRST}&endDate=${LAST}`)).json();
   const storylines = await (await ctx.fetch(`${API}?function=getStorylines`)).json();
@@ -127,41 +130,68 @@ async function plan(ctx, url) {
   const dates = Object.keys(comics).sort();
   ctx.info(`${dates.length} strips, ${storylines.length} storylines (${dates[0]} → ${dates[dates.length - 1]})`);
 
-  const byYear = new Map();
+  // Bucket strips either by calendar year or by storyline index.
+  const buckets = new Map(); // key → { images, extras, storylines:Set, dates:[] }
   const special = [];
   for (const date of dates) {
     const comic = comics[date];
     const assets = await stripAssets(ctx, date, comic);
     if (['mp4', 'swf', 'htm'].includes(comic.filetype)) special.push(`${date} (${comic.filetype})`);
-    const year = date.slice(0, 4);
-    if (!byYear.has(year)) byYear.set(year, { images: [], extras: [], storylines: new Set() });
-    const g = byYear.get(year);
+    const key = group === 'year' ? date.slice(0, 4) : String(Number(comic.storyline));
+    if (!buckets.has(key)) buckets.set(key, { images: [], extras: [], storylines: new Set(), dates: [] });
+    const b = buckets.get(key);
     // Sprite strips can legitimately compress to under 3 KB (a black-panel gag is ~2 KB),
     // so the engine's size floor is wrong here; the content-type check still guards errors.
-    g.images.push(...assets.images.map((it) => (it.generate ? it : { minBytes: 0, ...it })));
-    g.extras.push(...assets.extras);
+    b.images.push(...assets.images.map((it) => (it.generate ? it : { minBytes: 0, ...it })));
+    b.extras.push(...assets.extras);
+    b.dates.push(date);
     const s = storylines[Number(comic.storyline)];
-    if (s) g.storylines.add(s.title);
+    if (s) b.storylines.add(s.title);
   }
   if (special.length) {
     ctx.info(`${special.length} non-image strips handled (html → frames, video/flash → placeholder page + extras/): ${special.join(', ')}`);
   }
 
-  const groups = [...byYear.entries()].map(([year, g]) => ({
-    no: Number(year),
-    title: year,
-    images: g.images,
-    extras: g.extras,
-    meta: {
-      series: SERIES,
-      title: `${SERIES} ${year}`,
-      number: Number(year),
-      web: `${BASE}/archives/${year}-01-01`,
-      summary: `Storylines: ${[...g.storylines].join('; ')}`,
-    },
-  }));
+  let groups;
+  if (group === 'year') {
+    groups = [...buckets.entries()].map(([year, b]) => ({
+      no: Number(year),
+      title: year,
+      images: b.images,
+      extras: b.extras,
+      meta: {
+        title: `${SERIES} ${year}`,
+        web: `${BASE}/archives/${year}-01-01`,
+        summary: `Storylines: ${[...b.storylines].join('; ')}`,
+      },
+    }));
+  } else {
+    // Storyline titles aren't chronological on their own, so the file name carries the
+    // arc's order: "Bob and George - 023 - Title.cbz". -e selects by that number.
+    groups = [...buckets.entries()]
+      .map(([idx, b]) => ({ idx: Number(idx), b }))
+      .sort((a, c) => a.idx - c.idx)
+      .map(({ idx, b }, i) => {
+        const sl = storylines[idx] || {};
+        const n = i + 1;
+        const arc = plainTitle(sl.title) || `Storyline ${n}`;
+        const sub = plainTitle(sl.subtitle);
+        return {
+          no: n,
+          title: `${String(n).padStart(3, '0')} - ${arc}`,
+          images: b.images,
+          extras: b.extras,
+          meta: {
+            title: sub ? `${arc} — ${sub}` : arc,
+            web: `${BASE}/archives/${b.dates[0]}`,
+            summary: [plainTitle(sl.description), `${b.dates[0]} → ${b.dates[b.dates.length - 1]} (${b.dates.length} strips)`]
+              .filter(Boolean).join(' '),
+          },
+        };
+      });
+  }
 
   return { series: SERIES, groups, delay: 150, referer: `${BASE}/archives/` };
 }
 
-module.exports = { name: 'bobandgeorge', label: 'Bob and George archive — one CBZ per year', match, plan, _stripAssets: stripAssets };
+module.exports = { name: 'bobandgeorge', label: 'Bob and George archive', groups: GROUPS, defaultGroup: 'year', match, plan, _stripAssets: stripAssets };

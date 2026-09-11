@@ -23,7 +23,7 @@ Some sites are JS-rendered shells over a data API. Those get an adapter in `site
 
 | Site | Grouping | Notes |
 |---|---|---|
-| bobandgeorge.com | one CBZ per year (2000–2007) | pulls the full index from `getData.php`; pages are named by strip date; storyline titles go in ComicInfo Summary; html strips contribute their comic frames as pages; video/flash strips get a placeholder page in the CBZ and the file itself is saved to `extras/` next to the CBZs |
+| bobandgeorge.com | one CBZ per year (2000–2007), or per storyline with `-g storyline` (136 files, `Series - 001 - Arc title.cbz`) | pulls the full index from `getData.php`; pages are named by strip date; storyline titles go in ComicInfo Summary; html strips contribute their comic frames as pages; video/flash strips get a placeholder page in the CBZ and the file itself is saved to `extras/` next to the CBZs |
 
 `-e` selects years for adapter sites (`-e 2000-2003`). To add a site, copy `sites/bobandgeorge.js`, implement `match(url)` and `plan(ctx, url)`, and register it in `SITE_ADAPTERS` in `engine.js`.
 
@@ -44,6 +44,8 @@ node cli.js "<url>" [-e 1-10] [-n "Name"] [-o DIR] [--stitch] [--one-cbz] [--kee
 | `--keep` | keep the loose image folders after zipping |
 | `--numbered` | `0001 - Title.cbz` naming |
 | `--repair` | adapter sites: open the existing CBZ, fetch only the pages it's missing, rewrite it — use after a run with skipped pages |
+| `--force` | re-download files that already exist (by default an existing CBZ is skipped) |
+| `-g, --group` | adapter sites: how to split — bobandgeorge: `year` (default) or `storyline` |
 
 Needs Node 20.3 or newer.
 
@@ -69,6 +71,10 @@ test/e2e.js        spins up a mock comic site and runs the generic modes
 ```
 
 `npm test` runs the mock-site test (needs the dependencies installed).
+
+## Library
+
+Every CBZ written is recorded in `~/.comicgrab/history.json` (series, title, page count, source URL, path, date). The app's **Library** button lists them; clicking a row reveals the file. On any run, an episode/year whose CBZ already exists on disk is skipped — pass `--force` (or tick "Re-download") to redo it, or `--repair` to fill in only missing pages.
 
 ## Tuning per site
 

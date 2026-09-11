@@ -3,7 +3,7 @@
 /**
  * cli.js — comicgrab from the terminal. No Electron needed.
  *
- *   node cli.js <url> [-e 1-10] [-n "Name"] [-o DIR] [--stitch] [--one-cbz] [--keep] [--numbered] [--repair]
+ *   node cli.js <url> [-e 1-10] [-n "Name"] [-o DIR] [--stitch] [--one-cbz] [--keep] [--numbered] [--repair] [--force] [-g year|storyline]
  */
 
 const { parseArgs } = require('node:util');
@@ -19,6 +19,8 @@ const USAGE = `usage: comicgrab <url> [options]
       --keep      keep the loose image folders after zipping
       --numbered  name episode files "0001 - Title.cbz" instead of "Series - Title.cbz"
       --repair    site adapters: fetch only pages missing from an existing CBZ and rewrite it
+      --force     re-download files that already exist (default: skip them)
+  -g, --group     site adapters: how to split — bobandgeorge: year (default) or storyline
   -h, --help
 
 examples:
@@ -39,6 +41,8 @@ try {
       keep:     { type: 'boolean', default: false },
       numbered: { type: 'boolean', default: false },
       repair:   { type: 'boolean', default: false },
+      force:    { type: 'boolean', default: false },
+      group:    { type: 'string', short: 'g' },
       help:     { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -54,7 +58,7 @@ if (args.values.help || args.positionals.length !== 1) {
 }
 
 const onProgress = (ev) => {
-  const prefix = ev.type === 'warn' ? '  ! ' : ev.type === 'download' ? '  ' : ev.type === 'item' ? '  ' : '';
+  const prefix = ev.type === 'warn' ? '  ! ' : ['download', 'item', 'skip'].includes(ev.type) ? '  ' : '';
   if (ev.msg) console.log(prefix + ev.msg);
 };
 
@@ -67,6 +71,8 @@ grab(args.positionals[0], {
   keep: args.values.keep,
   numbered: args.values.numbered,
   repair: args.values.repair,
+  force: args.values.force,
+  group: args.values.group,
   onProgress,
 }).catch((e) => {
   console.error(`\nerror: ${e.message}`);

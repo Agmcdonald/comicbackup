@@ -63,6 +63,24 @@
   .toggles { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 18px; padding-top: 2px; }
   .toggles label { display: inline-flex; gap: 6px; align-items: center; color: var(--ink); cursor: pointer; }
   .toggles input { accent-color: var(--ink); margin: 0; }
+  select {
+    padding: 6px 8px; border: 1px solid var(--rule); border-radius: var(--radius);
+    background: #fff; font: inherit; color: inherit;
+  }
+  .hint { color: var(--ink-soft); font-size: 13px; }
+
+  /* Library — a flat list of what's been pulled, newest first */
+  .library { display: flex; flex-direction: column; min-height: 120px; max-height: 40vh; padding-bottom: 8px; }
+  .library .head { display: flex; justify-content: space-between; margin-bottom: 6px; }
+  .library .title { font-weight: 600; }
+  .library .count { color: var(--ink-soft); }
+  .lib-list { overflow: auto; font-size: 13px; }
+  .lib-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 5px 0; border-top: 1px solid var(--rule); cursor: pointer; }
+  .lib-row:hover { background: #f3f4f7; }
+  .lib-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-row .name b { font-weight: 600; }
+  .lib-row .meta { color: var(--ink-soft); white-space: nowrap; }
+  .lib-empty { color: #9aa0ad; padding: 6px 0; }
 
   .actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; padding-top: 4px; }
   button {
@@ -127,7 +145,15 @@
         <div><label for="name">Series name</label><input id="name" type="text" placeholder="detected"></div>
       </div>
 
+      <label for="group" id="groupLabel" hidden>Split by</label>
+      <div class="row" id="groupRow" hidden>
+        <select id="group"></select>
+        <span class="hint" id="groupHint"></span>
+      </div>
+
       <div class="toggles">
+        <label><input id="repair" type="checkbox"> Repair existing files (fetch only missing pages)</label>
+        <label><input id="force" type="checkbox"> Re-download files I already have</label>
         <label><input id="stitch" type="checkbox"> Stitch into tall strips</label>
         <label><input id="oneCbz" type="checkbox"> One CBZ for the whole series</label>
         <label><input id="keep" type="checkbox"> Keep loose images</label>
@@ -149,9 +175,17 @@
 
   <section class="panel log-panel"><pre class="log" id="log"></pre></section>
 
+  <section class="panel library" id="library" hidden>
+    <div class="head"><span class="title">Library</span><span class="count" id="libCount"></span></div>
+    <div class="lib-list" id="libList"></div>
+  </section>
+
   <div class="footer">
     <span class="status" id="status"></span>
-    <button id="open" class="small" type="button" hidden>Open folder</button>
+    <span class="row">
+      <button id="libToggle" class="small" type="button">Library</button>
+      <button id="open" class="small" type="button" hidden>Open folder</button>
+    </span>
   </div>
 
 <script src="renderer.js"></script>

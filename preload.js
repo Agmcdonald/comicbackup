@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('comicgrab', {
   chooseDir: (current) => ipcRenderer.invoke('chooseDir', current),
   openPath: (p) => ipcRenderer.invoke('openPath', p),
   showInFolder: (p) => ipcRenderer.invoke('showInFolder', p),
+  history: () => ipcRenderer.invoke('history'),
+  groupOptions: (url) => ipcRenderer.invoke('groupOptions', url),
   onProgress: (cb) => {
     const handler = (_e, msg) => cb(msg);
     ipcRenderer.on('progress', handler);
