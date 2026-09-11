@@ -48,6 +48,7 @@
   .form { display: grid; grid-template-columns: 84px 1fr; gap: 10px 12px; align-items: center; }
   .form label { color: var(--ink-soft); }
   .form .row { display: flex; gap: 8px; align-items: center; }
+  [hidden] { display: none !important; }   /* beats .form .row's display:flex */
   input[type=text] {
     width: 100%; min-width: 0;
     padding: 7px 9px;

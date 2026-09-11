@@ -155,18 +155,35 @@ async function cancel() {
 async function refreshGroupOptions() {
   const opts = await window.comicgrab.groupOptions(els.url.value.trim());
   if (!opts) { els.groupRow.hidden = true; els.groupLabel.hidden = true; return; }
-  els.group.replaceChildren(...opts.groups.map((g) => {
+  const LABEL = {
+    auto: 'whatever suits the site',
+    chapter: 'one file per chapter',
+    year: 'one file per year',
+    storyline: 'one file per storyline',
+    all: 'one file for everything',
+  };
+  const choices = opts.defaultGroup === 'auto' ? ['auto', ...opts.groups] : opts.groups;
+  els.group.replaceChildren(...choices.map((g) => {
     const o = document.createElement('option');
-    o.value = g; o.textContent = `one file per ${g}`;
+    o.value = g === 'auto' ? '' : g;
+    o.textContent = LABEL[g] || `one file per ${g}`;
     if (g === opts.defaultGroup) o.selected = true;
     return o;
   }));
-  els.groupHint.textContent = `${opts.site}: episode ranges select ${els.group.value}s`;
+  setGroupHint(opts);
   els.groupRow.hidden = false; els.groupLabel.hidden = false;
 }
-els.group.addEventListener('change', () => {
-  els.groupHint.textContent = els.groupHint.textContent.replace(/select \w+s$/, `select ${els.group.value}s`);
-});
+let groupOpts = null;
+function setGroupHint(opts) {
+  groupOpts = opts || groupOpts;
+  const g = els.group.value;
+  const what = { chapter: 'chapters', year: 'years', storyline: 'storylines', all: 'nothing to select' }[g]
+    || 'the detected split';
+  els.groupHint.textContent = g === ''
+    ? 'the app picks based on the archive'
+    : `episode ranges select ${what}`;
+}
+els.group.addEventListener('change', () => setGroupHint());
 
 // --- library ----------------------------------------------------------------
 async function loadLibrary() {

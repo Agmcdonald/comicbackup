@@ -132,7 +132,13 @@ ipcMain.handle('groupOptions', (_e, url) => {
   try {
     const u = /^https?:\/\//i.test(url) ? url : 'https://' + url;
     const a = SITE_ADAPTERS.find((x) => x.match(u));
-    return a?.groups ? { site: a.name, groups: a.groups, defaultGroup: a.defaultGroup } : null;
+    if (a?.groups) return { site: a.name, groups: a.groups, defaultGroup: a.defaultGroup };
+    // DOM-detected adapters (ComicControl) can't be known from the URL alone;
+    // offer their split options and let the engine decide once it sees the page.
+    if (/(^|\.)webtoons?\.com$/i.test(new URL(u).hostname)) return null; // built-in mode, not an adapter
+    const dom = SITE_ADAPTERS.filter((x) => x.matchDom && x.groups);
+    if (dom.length === 1) return { site: dom[0].name, groups: dom[0].groups, defaultGroup: dom[0].defaultGroup, maybe: true };
+    return null;
   } catch { return null; }
 });
 

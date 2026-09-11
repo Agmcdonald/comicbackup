@@ -25,6 +25,7 @@ const yauzl = require('yauzl');
 // Each exports { name, label, match(url), plan(ctx, url) }.
 const SITE_ADAPTERS = [
   require('./sites/bobandgeorge'),
+  require('./sites/comiccontrol'),  // matches on page markup, not URL
 ];
 
 // --- tuning ----------------------------------------------------------------
@@ -156,7 +157,9 @@ function safeName(s) {
 
 /** "Series - Episode title.cbz", or "0001 - Episode title.cbz" with numbered. */
 function cbzName(ctx, series, no, title) {
-  const stem = ctx.opts.numbered ? `${numTag(no)} - ${safeName(title)}` : `${safeName(series)} - ${safeName(title)}`;
+  const s = safeName(series), t = safeName(title);
+  // "Street Fighter - Street Fighter.cbz" → just "Street Fighter.cbz"
+  const stem = ctx.opts.numbered ? `${numTag(no)} - ${t}` : (s === t ? s : `${s} - ${t}`);
   return `${stem}.cbz`;
 }
 
@@ -457,7 +460,9 @@ function plannedName(item) {
   const it = typeof item === 'string' ? { url: item } : item;
   if (it.generate) return safeName(path.parse(it.name || '').name || 'page') + '.png';
   if (!it.name) return null;
-  return safeName(path.parse(it.name).name) + path.extname(it.name);
+  const ext = path.extname(it.name).toLowerCase();
+  // Unknown extension (resolved at download time) → match on the stem instead.
+  return safeName(path.parse(it.name).name) + (IMAGE_EXTS.has(ext) ? ext : '');
 }
 
 /** Extract every entry of a CBZ except ComicInfo.xml into dir. Returns extracted names. */
@@ -499,11 +504,20 @@ async function downloadImages(ctx, items, dest, referer) {
                              msg: `[${i + 1}/${items.length}] ${path.basename(p)} (placeholder)` });
       continue;
     }
+    if (it.resolve && !it.url) {
+      try {
+        it.url = await it.resolve(ctx);
+      } catch (e) {
+        ctx.warn(`skipped ${it.name || 'page'} (${e.message})`);
+        continue;
+      }
+      if (!it.url) { ctx.warn(`skipped ${it.name || 'page'} (no comic image on the page)`); continue; }
+    }
     const candidates = [it.url, ...(it.fallbacks || [])];
     let res = null, u = it.url, lastErr = null;
     for (const cand of candidates) {
       try {
-        res = await ctx.fetch(cand, { timeout: 60_000, headers: { Referer: referer } });
+        res = await ctx.fetch(cand, { timeout: 60_000, headers: { Referer: it.referer || referer } });
         u = cand;
         break;
       } catch (e) {
@@ -526,7 +540,8 @@ async function downloadImages(ctx, items, dest, referer) {
       continue;
     }
     const fname = it.name
-      ? safeName(path.parse(it.name).name) + (path.extname(it.name) || extFor(u, ctype))
+      ? safeName(path.parse(it.name).name) + (IMAGE_EXTS.has(path.extname(it.name).toLowerCase())
+          ? path.extname(it.name) : extFor(u, ctype))
       : `${String(saved.length + 1).padStart(4, '0')}${extFor(u, ctype)}`;
     const p = path.join(dest, fname);
     await fs.promises.writeFile(p, buf);
@@ -735,8 +750,10 @@ async function runPlanned(ctx, planned, outRoot, sourceUrl) {
       const names = g.images.map(plannedName);
       if (names.every(Boolean)) {
         await fs.promises.mkdir(dir, { recursive: true });
-        const have = new Set(await extractCbz(cbz, dir));
-        items = g.images.filter((it, i) => !have.has(names[i]));
+        const present = await extractCbz(cbz, dir);
+        const have = new Set(present);
+        const stems = new Set(present.map((n) => path.parse(n).name));
+        items = g.images.filter((it, i) => !(have.has(names[i]) || stems.has(path.parse(names[i]).name)));
         existing = [...have].map((n) => path.join(dir, n));
         if (!items.length) {
           ctx.info(`${g.title}: complete (${have.size} pages) — nothing to repair`);
@@ -854,7 +871,11 @@ async function grab(inputUrl, opts = {}) {
   const adapter = SITE_ADAPTERS.find((a) => a.match(url));
   if (adapter) {
     const mode = `site:${adapter.name}`;
-    const groupLabel = adapter.groups ? ` — one CBZ per ${opts.group || adapter.defaultGroup}` : '';
+    const gsel0 = opts.group || adapter.defaultGroup;
+    const groupLabel = !adapter.groups ? ''
+      : gsel0 === 'auto' ? ''
+      : gsel0 === 'all' ? ' — one CBZ for everything'
+      : ` — one CBZ per ${gsel0}`;
     ctx.emit('mode', { mode, msg: `detected: ${adapter.label}${groupLabel}` });
     const planned = await adapter.plan(ctx, url, { group: opts.group });
     const series = opts.name ? safeName(opts.name) : planned.series;
@@ -866,6 +887,24 @@ async function grab(inputUrl, opts = {}) {
   }
 
   const { mode, $, chapters } = await classify(ctx, url);
+
+  const domAdapter = SITE_ADAPTERS.find((a) => a.matchDom?.($, url));
+  if (domAdapter) {
+    const m = `site:${domAdapter.name}`;
+    const gsel = opts.group || domAdapter.defaultGroup;
+    const gl = !domAdapter.groups ? ''
+      : gsel === 'auto' ? ''
+      : gsel === 'all' ? ' — one CBZ for everything'
+      : ` — one CBZ per ${gsel}`;
+    ctx.emit('mode', { mode: m, msg: `detected: ${domAdapter.label}${gl}` });
+    const planned = await domAdapter.plan(ctx, url, { group: opts.group });
+    planned.series = opts.name ? safeName(opts.name) : safeName(planned.series);
+    planned.site = domAdapter.name;
+    const files = await runPlanned(ctx, planned, path.join(base, planned.series), url);
+    ctx.emit('done', { files, msg: `done — ${files.length} CBZ file(s) under ${base}` });
+    return { mode: m, series: planned.series, outDir: base, files };
+  }
+
   ctx.emit('mode', { mode, msg: `detected: ${MODE_LABEL[mode]}` });
 
   const series = opts.name ? safeName(opts.name) : ogTitle($, new URL(url).hostname);
