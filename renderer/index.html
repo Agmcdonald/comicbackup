@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>ComicGrab</title>
+<style>
+  :root {
+    --paper: #e4e7ec;      /* the table the panels sit on */
+    --panel: #ffffff;
+    --ink: #23283a;        /* panel borders, headings, primary text */
+    --ink-soft: #5c6273;
+    --rule: #c9ced8;
+    --tile: #d6dae2;       /* a page not yet downloaded */
+    --fill: #d9336b;       /* a page that landed */
+    --warn: #b7791f;
+    --danger: #b3261e;
+    --radius: 3px;
+    --font: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.45 var(--font);
+    color: var(--ink);
+    background: var(--paper);
+    display: flex; flex-direction: column;
+    padding: 18px 20px 16px;
+    gap: 14px;
+    -webkit-user-select: none; user-select: none;
+  }
+  input, button { font: inherit; color: inherit; }
+
+  /* Header: a small wordmark, nothing else */
+  h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.01em; }
+  h1 small { font-weight: 400; color: var(--ink-soft); margin-left: 8px; }
+
+  /* Panels — comic panels: white, a firm ink border, square-ish corners */
+  .panel {
+    background: var(--panel);
+    border: 2px solid var(--ink);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+
+  /* Form grid */
+  .form { display: grid; grid-template-columns: 84px 1fr; gap: 10px 12px; align-items: center; }
+  .form label { color: var(--ink-soft); }
+  .form .row { display: flex; gap: 8px; align-items: center; }
+  input[type=text] {
+    width: 100%; min-width: 0;
+    padding: 7px 9px;
+    border: 1px solid var(--rule); border-radius: var(--radius);
+    background: #fff; -webkit-user-select: text; user-select: text;
+  }
+  input[type=text]:focus { outline: 2px solid var(--ink); outline-offset: -1px; border-color: var(--ink); }
+  input[type=text]::placeholder { color: #9aa0ad; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .split > div { display: flex; gap: 8px; align-items: center; }
+  .split label { color: var(--ink-soft); white-space: nowrap; }
+
+  .toggles { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 18px; padding-top: 2px; }
+  .toggles label { display: inline-flex; gap: 6px; align-items: center; color: var(--ink); cursor: pointer; }
+  .toggles input { accent-color: var(--ink); margin: 0; }
+
+  .actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; padding-top: 4px; }
+  button {
+    padding: 7px 14px;
+    border: 1.5px solid var(--ink); border-radius: var(--radius);
+    background: #fff; cursor: pointer;
+  }
+  button:hover { background: #f3f4f7; }
+  button:focus-visible { outline: 2px solid var(--fill); outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  button.primary:hover { background: #343a4f; }
+  button.small { padding: 5px 10px; }
+
+  /* Progress panel — the one bold element: a tile per page */
+  .progress { display: none; }
+  .progress.on { display: block; }
+  .progress .head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .progress .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .progress .count { color: var(--ink-soft); white-space: nowrap; }
+  .tiles { display: flex; flex-wrap: wrap; gap: 3px; min-height: 9px; }
+  .tiles i { display: block; width: 9px; height: 9px; background: var(--tile); border-radius: 1px; }
+  .tiles i.on { background: var(--fill); }
+  .tiles.indeterminate i { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { background: var(--rule); } }
+  @media (prefers-reduced-motion: reduce) { .tiles.indeterminate i { animation: none; } }
+  .progress .foot { margin-top: 8px; color: var(--ink-soft); font-size: 13px; }
+
+  /* Log panel fills the rest */
+  .log-panel { flex: 1; min-height: 120px; display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+  .log {
+    flex: 1; overflow: auto; margin: 0; padding: 10px 14px;
+    font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all;
+    -webkit-user-select: text; user-select: text;
+  }
+  .log .warn { color: var(--warn); }
+  .log .err { color: var(--danger); }
+  .log .ok { color: var(--ink); font-weight: 600; }
+  .log:empty::before { content: "Paste a comic URL and choose Download."; color: #9aa0ad; }
+
+  .footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 30px; }
+  .footer .status { color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+  <h1>ComicGrab <small>webtoons and webcomics to CBZ</small></h1>
+
+  <section class="panel">
+    <div class="form">
+      <label for="url">Comic URL</label>
+      <input id="url" type="text" spellcheck="false" placeholder="https://www.webtoons.com/en/…/list?title_no=…">
+
+      <label for="out">Save to</label>
+      <div class="row">
+        <input id="out" type="text" spellcheck="false">
+        <button id="choose" class="small" type="button">Choose…</button>
+      </div>
+
+      <label for="episodes">Episodes</label>
+      <div class="split">
+        <div><input id="episodes" type="text" placeholder="all  ·  3  ·  1-10  ·  1,4,9-12"></div>
+        <div><label for="name">Series name</label><input id="name" type="text" placeholder="detected"></div>
+      </div>
+
+      <div class="toggles">
+        <label><input id="stitch" type="checkbox"> Stitch into tall strips</label>
+        <label><input id="oneCbz" type="checkbox"> One CBZ for the whole series</label>
+        <label><input id="keep" type="checkbox"> Keep loose images</label>
+        <label><input id="numbered" type="checkbox"> Number files 0001, 0002…</label>
+      </div>
+
+      <div class="actions">
+        <button id="cancel" type="button" disabled>Cancel</button>
+        <button id="go" class="primary" type="button">Download</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel progress" id="progress">
+    <div class="head"><span class="title" id="itemTitle">Starting…</span><span class="count" id="itemCount"></span></div>
+    <div class="tiles indeterminate" id="tiles"></div>
+    <div class="foot" id="pageCount"></div>
+  </section>
+
+  <section class="panel log-panel"><pre class="log" id="log"></pre></section>
+
+  <div class="footer">
+    <span class="status" id="status"></span>
+    <button id="open" class="small" type="button" hidden>Open folder</button>
+  </div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

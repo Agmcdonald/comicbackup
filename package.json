@@ -1,0 +1,30 @@
+{
+  "name": "comicgrab",
+  "version": "0.1.0",
+  "description": "Download webcomics / webtoons and save them as CBZ files.",
+  "main": "main.js",
+  "bin": { "comicgrab": "cli.js" },
+  "scripts": {
+    "start": "electron .",
+    "cli": "node cli.js",
+    "dist": "electron-builder",
+    "test": "node test/e2e.js"
+  },
+  "engines": { "node": ">=20.3" },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "sharp": "^0.33.5",
+    "yazl": "^2.5.1"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.rapturepress.comicgrab",
+    "productName": "ComicGrab",
+    "files": ["engine.js", "cli.js", "main.js", "preload.js", "renderer/**"],
+    "mac": { "target": "dmg" },
+    "win": { "target": "nsis" }
+  }
+}
