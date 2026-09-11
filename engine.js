@@ -19,6 +19,13 @@ const os = require('os');
 const path = require('path');
 const cheerio = require('cheerio');
 const yazl = require('yazl');
+const yauzl = require('yauzl');
+
+// Site adapters: sites whose data is reachable without scraping HTML.
+// Each exports { name, label, match(url), plan(ctx, url) }.
+const SITE_ADAPTERS = [
+  require('./sites/bobandgeorge'),
+];
 
 // --- tuning ----------------------------------------------------------------
 const HEADERS = {
@@ -52,7 +59,8 @@ const MIME_EXT = {
 
 const MAX_LIST_PAGES = 40;
 const MAX_PAGES = 150;
-const RETRIES = 3;
+const RETRIES = 5;          // network failures: backoff 2, 4, 8, 16 s
+const HTTP_RETRIES = 3;     // 429 / 5xx
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
 const DELAY = 500;          // ms between requests — be polite
 const MIN_BYTES = 3_000;
@@ -88,6 +96,7 @@ class Ctx {
     this.onProgress = opts.onProgress || (() => {});
     this.renderPage = opts.renderPage || null; // async (url) => [imgUrl, ...]
     this.signal = opts.signal || null;         // AbortSignal for cancellation
+    this.delay = opts.delay ?? DELAY;          // ms between requests; adapters may lower it
     this.opts = opts;
     this.cookies = {}; // host-suffix → 'k=v; k2=v2'
   }
@@ -115,7 +124,7 @@ class Ctx {
         const res = await this.fetchImpl(url, {
           headers: h, redirect: 'follow', signal: AbortSignal.any(signals),
         });
-        if (RETRY_STATUS.has(res.status) && attempt < RETRIES) {
+        if (RETRY_STATUS.has(res.status) && attempt < HTTP_RETRIES) {
           throw new Error(`HTTP ${res.status}`);
         }
         if (!res.ok) throw new HttpError(res.status, url);
@@ -124,7 +133,7 @@ class Ctx {
         if (this.signal?.aborted) throw new CancelledError();
         if (attempt === RETRIES || e instanceof HttpError) throw e;
         this.warn(`retry ${attempt}/${RETRIES - 1} for ${url} (${e.message})`);
-        await sleep(attempt * 2000);
+        await sleep(2000 * 2 ** (attempt - 1));
       }
     }
   }
@@ -404,16 +413,106 @@ async function collectImageUrls(ctx, startUrl) {
 // ---------------------------------------------------------------------------
 
 // --- output ----------------------------------------------------------------
-async function downloadImages(ctx, urls, dest, referer) {
+/** Render a simple text card (used for strips that aren't images: video, flash). */
+async function generatePage({ width = 800, height = 200, lines = [] }, outPath) {
+  let sharp;
+  try { sharp = require('sharp'); } catch { throw new Error('placeholder pages need sharp:  npm install sharp'); }
+  const fs = 20, lh = 28;
+  const startY = Math.round(height / 2 - ((lines.length - 1) * lh) / 2);
+  const text = lines.map((l, i) =>
+    `<text x="${width / 2}" y="${startY + i * lh}" text-anchor="middle" dominant-baseline="middle" ` +
+    `font-family="Helvetica, Arial, sans-serif" font-size="${i === 0 ? fs + 2 : fs - 4}" ` +
+    `font-weight="${i === 0 ? 'bold' : 'normal'}" fill="#222">${esc(l)}</text>`).join('');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
+    `<rect x="0" y="0" width="${width}" height="${height}" fill="#fff"/>` +
+    `<rect x="3" y="3" width="${width - 6}" height="${height - 6}" fill="none" stroke="#222" stroke-width="3"/>` +
+    text + `</svg>`;
+  await sharp(Buffer.from(svg)).png().toFile(outPath);
+}
+
+/** Download arbitrary files (video, flash) — status-checked only, no image filtering. */
+async function downloadFiles(ctx, items, dest, referer) {
   await fs.promises.mkdir(dest, { recursive: true });
   const saved = [];
-  for (const [i, u] of urls.entries()) {
+  for (const it of items) {
     ctx.check();
-    let res;
+    const p = path.join(dest, safeName(path.parse(it.name).name) + path.extname(it.name));
+    if (fs.existsSync(p) && fs.statSync(p).size > 0) { saved.push(p); continue; } // already have it
     try {
-      res = await ctx.fetch(u, { timeout: 60_000, headers: { Referer: referer } });
+      const res = await ctx.fetch(it.url, { timeout: 300_000, headers: { Referer: referer } });
+      const buf = Buffer.from(await res.arrayBuffer());
+      await fs.promises.writeFile(p, buf);
+      saved.push(p);
+      ctx.info(`extra: ${path.basename(p)} (${Math.floor(buf.length / 1024)} KB)`);
     } catch (e) {
-      ctx.warn(`skipped ${u} (${e.message})`);
+      ctx.warn(`skipped extra ${it.url} (${e.message})`);
+    }
+    await sleep(ctx.delay);
+  }
+  return saved;
+}
+
+/** The filename downloadImages will produce for a named item (null if unnamed). */
+function plannedName(item) {
+  const it = typeof item === 'string' ? { url: item } : item;
+  if (it.generate) return safeName(path.parse(it.name || '').name || 'page') + '.png';
+  if (!it.name) return null;
+  return safeName(path.parse(it.name).name) + path.extname(it.name);
+}
+
+/** Extract every entry of a CBZ except ComicInfo.xml into dir. Returns extracted names. */
+function extractCbz(cbzPath, dir) {
+  return new Promise((resolve, reject) => {
+    const names = [];
+    yauzl.open(cbzPath, { lazyEntries: true }, (err, zip) => {
+      if (err) return reject(err);
+      zip.on('error', reject);
+      zip.on('end', () => resolve(names));
+      zip.on('entry', (entry) => {
+        if (/\/$/.test(entry.fileName) || entry.fileName === 'ComicInfo.xml') return zip.readEntry();
+        const out = path.join(dir, path.basename(entry.fileName));
+        zip.openReadStream(entry, (e, stream) => {
+          if (e) return reject(e);
+          stream.pipe(fs.createWriteStream(out))
+            .on('finish', () => { names.push(path.basename(entry.fileName)); zip.readEntry(); })
+            .on('error', reject);
+        });
+      });
+      zip.readEntry();
+    });
+  });
+}
+
+/** items: URL strings, or { url, name?, fallbacks?, minBytes? } — fallbacks are tried on a 404 —
+ *  or { generate: { width, height, lines }, name } for a rendered placeholder page. */
+async function downloadImages(ctx, items, dest, referer) {
+  await fs.promises.mkdir(dest, { recursive: true });
+  const saved = [];
+  for (const [i, item] of items.entries()) {
+    ctx.check();
+    const it = typeof item === 'string' ? { url: item } : item;
+    if (it.generate) {
+      const p = path.join(dest, safeName(path.parse(it.name || `page-${i + 1}`).name) + '.png');
+      await generatePage(it.generate, p);
+      saved.push(p);
+      ctx.emit('download', { done: i + 1, total: items.length, file: path.basename(p), bytes: 0,
+                             msg: `[${i + 1}/${items.length}] ${path.basename(p)} (placeholder)` });
+      continue;
+    }
+    const candidates = [it.url, ...(it.fallbacks || [])];
+    let res = null, u = it.url, lastErr = null;
+    for (const cand of candidates) {
+      try {
+        res = await ctx.fetch(cand, { timeout: 60_000, headers: { Referer: referer } });
+        u = cand;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (!(e instanceof HttpError && e.status === 404)) break;
+      }
+    }
+    if (!res) {
+      ctx.warn(`skipped ${u} (${lastErr?.message || 'no response'})`);
       continue;
     }
     const ctype = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
@@ -422,18 +521,21 @@ async function downloadImages(ctx, urls, dest, referer) {
       continue;
     }
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < MIN_BYTES) {
+    if (buf.length < (it.minBytes ?? MIN_BYTES)) {
       ctx.warn(`skipped ${u} (only ${buf.length} bytes)`);
       continue;
     }
-    const p = path.join(dest, `${String(saved.length + 1).padStart(4, '0')}${extFor(u, ctype)}`);
+    const fname = it.name
+      ? safeName(path.parse(it.name).name) + (path.extname(it.name) || extFor(u, ctype))
+      : `${String(saved.length + 1).padStart(4, '0')}${extFor(u, ctype)}`;
+    const p = path.join(dest, fname);
     await fs.promises.writeFile(p, buf);
     saved.push(p);
     ctx.emit('download', {
-      done: i + 1, total: urls.length, file: path.basename(p), bytes: buf.length,
-      msg: `[${i + 1}/${urls.length}] ${path.basename(p)} (${Math.floor(buf.length / 1024)} KB)`,
+      done: i + 1, total: items.length, file: path.basename(p), bytes: buf.length,
+      msg: `[${i + 1}/${items.length}] ${path.basename(p)} (${Math.floor(buf.length / 1024)} KB)`,
     });
-    await sleep(DELAY);
+    await sleep(ctx.delay);
   }
   return saved;
 }
@@ -485,7 +587,7 @@ async function maybeStitch(ctx, saved) {
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-function comicInfoXml({ series, web, count, number = null, title = '' }) {
+function comicInfoXml({ series, web, count, number = null, title = '', summary = '' }) {
   const lines = [
     '<?xml version="1.0" encoding="utf-8"?>',
     '<ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
@@ -493,6 +595,7 @@ function comicInfoXml({ series, web, count, number = null, title = '' }) {
   ];
   if (number !== null && number !== undefined) lines.push(`  <Number>${Number(number)}</Number>`);
   if (title) lines.push(`  <Title>${esc(title)}</Title>`);
+  if (summary) lines.push(`  <Summary>${esc(summary)}</Summary>`);
   lines.push(`  <Web>${esc(web)}</Web>`, `  <PageCount>${count}</PageCount>`, '</ComicInfo>');
   return lines.join('\n') + '\n';
 }
@@ -575,6 +678,57 @@ async function runSeries(ctx, items, series, outRoot, sourceUrl, kind) {
   return made;
 }
 
+/** Site-adapter path: the adapter already knows every image; we just download and zip. */
+async function runPlanned(ctx, planned, outRoot, sourceUrl) {
+  const groups = applySelection(ctx, planned.groups, ctx.opts.episodes ?? 'all');
+  if (!groups.length) throw new Error('No (matching) parts found.');
+  if (planned.delay !== undefined && ctx.opts.delay === undefined) ctx.delay = planned.delay;
+  const referer = planned.referer || sourceUrl;
+  await fs.promises.mkdir(outRoot, { recursive: true });
+  const made = [];
+  for (const [idx, g] of groups.entries()) {
+    ctx.check();
+    ctx.emit('item', { index: idx + 1, total: groups.length, no: g.no, title: g.title,
+                       msg: `${g.title}: ${g.images.length} image(s)` });
+    const dir = path.join(outRoot, safeName(g.title));
+    const cbz = path.join(outRoot, cbzName(ctx, planned.series, g.no, g.title));
+
+    let items = g.images;
+    let existing = [];
+    if (ctx.opts.repair && fs.existsSync(cbz) && !ctx.opts.stitch) {
+      const names = g.images.map(plannedName);
+      if (names.every(Boolean)) {
+        await fs.promises.mkdir(dir, { recursive: true });
+        const have = new Set(await extractCbz(cbz, dir));
+        items = g.images.filter((it, i) => !have.has(names[i]));
+        existing = [...have].map((n) => path.join(dir, n));
+        if (!items.length) {
+          ctx.info(`${g.title}: complete (${have.size} pages) — nothing to repair`);
+          await cleanup(ctx, dir);
+          made.push(cbz);
+          continue;
+        }
+        ctx.info(`${g.title}: ${have.size} pages present, fetching ${items.length} missing`);
+      } else {
+        ctx.warn(`${g.title}: pages aren't named, can't repair — re-downloading`);
+      }
+    }
+
+    const saved = await downloadImages(ctx, items, dir, referer);
+    if (!saved.length && !existing.length) { ctx.warn(`nothing downloaded for ${g.title} — skipped`); continue; }
+    const files = await maybeStitch(ctx, [...existing, ...saved]);
+    await makeCbz(files, cbz, { series: planned.series, web: sourceUrl, number: g.no, title: g.title, ...g.meta });
+    await cleanup(ctx, dir);
+    made.push(cbz);
+    ctx.emit('cbz', { path: cbz, msg: `wrote ${path.basename(cbz)}` });
+    if (g.extras?.length) {
+      ctx.info(`${g.extras.length} non-image strip(s) → extras/`);
+      await downloadFiles(ctx, g.extras, path.join(outRoot, 'extras'), referer);
+    }
+  }
+  return made;
+}
+
 async function runGallery(ctx, url, outRoot, title) {
   ctx.info('scanning gallery…');
   const images = await collectImageUrls(ctx, url);
@@ -633,6 +787,8 @@ async function runWebtoonEpisode(ctx, url, $, base) {
  *   keep       keep loose image folders after zipping
  *   numbered   prefix per-episode CBZ names with 0001 - instead of the series title
  *   signal     AbortSignal — abort to cancel; grab() rejects with CancelledError
+ *   delay      ms between requests (default 500; site adapters may set their own)
+ *   repair     site adapters: open an existing CBZ, fetch only the pages it's missing, rewrite it
  *   onProgress ({type, msg, ...}) => void   types: info warn item download cbz
  *   fetchImpl  fetch-compatible function (Electron: net.fetch)
  *   renderPage async (url) => [imgUrl] — live-DOM fallback for JS-rendered readers
@@ -647,10 +803,23 @@ async function grab(inputUrl, opts = {}) {
 
   if (WEBTOON_HOST.test(new URL(url).hostname)) ctx.cookies['webtoons.com'] = 'ageGatePass=true';
 
+  const base = path.resolve(opts.outDir || path.join(os.homedir(), 'Downloads', 'Comics'));
+
+  const adapter = SITE_ADAPTERS.find((a) => a.match(url));
+  if (adapter) {
+    const mode = `site:${adapter.name}`;
+    ctx.emit('mode', { mode, msg: `detected: ${adapter.label}` });
+    const planned = await adapter.plan(ctx, url);
+    const series = opts.name ? safeName(opts.name) : planned.series;
+    planned.series = series;
+    const files = await runPlanned(ctx, planned, path.join(base, series), url);
+    ctx.emit('done', { files, msg: `done — ${files.length} CBZ file(s) under ${base}` });
+    return { mode, series, outDir: base, files };
+  }
+
   const { mode, $, chapters } = await classify(ctx, url);
   ctx.emit('mode', { mode, msg: `detected: ${MODE_LABEL[mode]}` });
 
-  const base = path.resolve(opts.outDir || path.join(os.homedir(), 'Downloads', 'Comics'));
   const series = opts.name ? safeName(opts.name) : ogTitle($, new URL(url).hostname);
   let files;
 
@@ -678,7 +847,7 @@ async function grab(inputUrl, opts = {}) {
 }
 
 module.exports = {
-  grab, classify, MODE_LABEL, HttpError, CancelledError,
+  grab, classify, MODE_LABEL, HttpError, CancelledError, SITE_ADAPTERS,
   // exported for tests
   _internal: {
     safeName, cleanTitle, numTag, parseEpisodeSpec, largestFromSrcset,

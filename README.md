@@ -17,6 +17,16 @@ Each CBZ contains a `ComicInfo.xml` with series, episode number, title, and sour
 
 The desktop app has one trick the CLI doesn't: when a reader builds its pages with JavaScript and the static HTML has no images, it loads the page in a hidden browser window and reads the live DOM.
 
+## Site adapters
+
+Some sites are JS-rendered shells over a data API. Those get an adapter in `sites/` that skips HTML scraping and builds the image list directly:
+
+| Site | Grouping | Notes |
+|---|---|---|
+| bobandgeorge.com | one CBZ per year (2000–2007) | pulls the full index from `getData.php`; pages are named by strip date; storyline titles go in ComicInfo Summary; html strips contribute their comic frames as pages; video/flash strips get a placeholder page in the CBZ and the file itself is saved to `extras/` next to the CBZs |
+
+`-e` selects years for adapter sites (`-e 2000-2003`). To add a site, copy `sites/bobandgeorge.js`, implement `match(url)` and `plan(ctx, url)`, and register it in `SITE_ADAPTERS` in `engine.js`.
+
 ## Command line
 
 ```
@@ -33,6 +43,7 @@ node cli.js "<url>" [-e 1-10] [-n "Name"] [-o DIR] [--stitch] [--one-cbz] [--kee
 | `--one-cbz` | series modes: everything in a single CBZ |
 | `--keep` | keep the loose image folders after zipping |
 | `--numbered` | `0001 - Title.cbz` naming |
+| `--repair` | adapter sites: open the existing CBZ, fetch only the pages it's missing, rewrite it — use after a run with skipped pages |
 
 Needs Node 20.3 or newer.
 

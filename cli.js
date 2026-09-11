@@ -3,7 +3,7 @@
 /**
  * cli.js — comicgrab from the terminal. No Electron needed.
  *
- *   node cli.js <url> [-e 1-10] [-n "Name"] [-o DIR] [--stitch] [--one-cbz] [--keep] [--numbered]
+ *   node cli.js <url> [-e 1-10] [-n "Name"] [-o DIR] [--stitch] [--one-cbz] [--keep] [--numbered] [--repair]
  */
 
 const { parseArgs } = require('node:util');
@@ -18,6 +18,7 @@ const USAGE = `usage: comicgrab <url> [options]
       --one-cbz   series modes: merge everything into a single CBZ
       --keep      keep the loose image folders after zipping
       --numbered  name episode files "0001 - Title.cbz" instead of "Series - Title.cbz"
+      --repair    site adapters: fetch only pages missing from an existing CBZ and rewrite it
   -h, --help
 
 examples:
@@ -37,6 +38,7 @@ try {
       'one-cbz': { type: 'boolean', default: false },
       keep:     { type: 'boolean', default: false },
       numbered: { type: 'boolean', default: false },
+      repair:   { type: 'boolean', default: false },
       help:     { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -64,6 +66,7 @@ grab(args.positionals[0], {
   oneCbz: args.values['one-cbz'],
   keep: args.values.keep,
   numbered: args.values.numbered,
+  repair: args.values.repair,
   onProgress,
 }).catch((e) => {
   console.error(`\nerror: ${e.message}`);
