@@ -26,6 +26,7 @@ const yauzl = require('yauzl');
 const SITE_ADAPTERS = [
   require('./sites/bobandgeorge'),
   require('./sites/comiccontrol'),  // matches on page markup, not URL
+  require('./sites/mangadex'),
 ];
 
 // --- tuning ----------------------------------------------------------------
@@ -90,6 +91,48 @@ class CancelledError extends Error {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Hostnames whose presence in a DNS answer means a filtering resolver has
+// substituted its own servers for the real ones.
+const FILTER_TELLS = /watchguard|opendns|umbrella|dnsfilter|cleanbrowsing|blocked|filtered|safedns|webtitan|securly/i;
+
+/**
+ * When a host keeps resetting, look at its DNS answer: on filtered networks
+ * (public Wi-Fi, some routers) the resolver returns its own block servers and
+ * the connection then dies with ERR_CONNECTION_RESET / ECONNRESET, which looks
+ * exactly like a broken app. One CNAME lookup usually names the culprit.
+ * Returns a human explanation, or null when DNS looks normal. Never throws.
+ */
+async function diagnoseHost(hostname) {
+  try {
+    const dns = require('dns').promises;
+    const [cnames, addrs] = await Promise.all([
+      dns.resolveCname(hostname).catch(() => []),
+      dns.resolve4(hostname).catch(() => []),
+    ]);
+    const tell = [...cnames, ...addrs.map(String)].find((n) => FILTER_TELLS.test(n));
+    if (tell) {
+      return `${hostname} resolves through "${tell}" — this network is filtering DNS ` +
+             `and blocking the site. The app and the site are fine; try another network.`;
+    }
+    if (!cnames.length && !addrs.length) {
+      return `${hostname} doesn't resolve at all on this network — DNS is blocking it. ` +
+             `Try another network.`;
+    }
+  } catch { /* diagnosis must never make things worse */ }
+  return null;
+}
+
+/** Node's fetch reports every network problem as "fetch failed" — the useful
+ *  part (DNS, TLS, reset) is hidden in .cause. Unwrap it for the log. */
+function why(e) {
+  const parts = [];
+  for (let c = e; c; c = c.cause) {
+    const bit = c.code || c.message;
+    if (bit && bit !== 'fetch failed' && !parts.includes(bit)) parts.push(bit);
+  }
+  return parts.length ? parts.join(': ') : (e.message || String(e));
+}
+
 /** Bound per-run context: fetch impl, progress sink, cookies, options. */
 class Ctx {
   constructor(opts) {
@@ -103,6 +146,16 @@ class Ctx {
   }
   emit(type, data = {}) { this.onProgress({ type, ...data }); }
   check() { if (this.signal?.aborted) throw new CancelledError(); }
+
+  /** One DNS diagnosis per host per run, after a connection reset. */
+  async explainReset(url) {
+    const host = new URL(url).hostname;
+    this._diagnosed ??= new Set();
+    if (this._diagnosed.has(host)) return;
+    this._diagnosed.add(host);
+    const verdict = await diagnoseHost(host);
+    if (verdict) this.emit('warn', { msg: verdict, diagnosis: true });
+  }
   info(msg) { this.emit('info', { msg }); }
   warn(msg) { this.emit('warn', { msg }); }
 
@@ -133,7 +186,11 @@ class Ctx {
       } catch (e) {
         if (this.signal?.aborted) throw new CancelledError();
         if (attempt === RETRIES || e instanceof HttpError) throw e;
-        this.warn(`retry ${attempt}/${RETRIES - 1} for ${url} (${e.message})`);
+        const reason = why(e);
+        this.warn(`retry ${attempt}/${RETRIES - 1} for ${url} (${reason})`);
+        if (/CONNECTION_RESET|ECONNRESET|CONNECTION_REFUSED|ECONNREFUSED|ENOTFOUND|NAME_NOT_RESOLVED/i.test(reason)) {
+          await this.explainReset(url);
+        }
         await sleep(2000 * 2 ** (attempt - 1));
       }
     }
@@ -448,7 +505,7 @@ async function downloadFiles(ctx, items, dest, referer) {
       saved.push(p);
       ctx.info(`extra: ${path.basename(p)} (${Math.floor(buf.length / 1024)} KB)`);
     } catch (e) {
-      ctx.warn(`skipped extra ${it.url} (${e.message})`);
+      ctx.warn(`skipped extra ${it.url} (${why(e)})`);
     }
     await sleep(ctx.delay);
   }
@@ -508,7 +565,7 @@ async function downloadImages(ctx, items, dest, referer) {
       try {
         it.url = await it.resolve(ctx);
       } catch (e) {
-        ctx.warn(`skipped ${it.name || 'page'} (${e.message})`);
+        ctx.warn(`skipped ${it.name || 'page'} (${why(e)})`);
         continue;
       }
       if (!it.url) { ctx.warn(`skipped ${it.name || 'page'} (no comic image on the page)`); continue; }
@@ -526,7 +583,7 @@ async function downloadImages(ctx, items, dest, referer) {
       }
     }
     if (!res) {
-      ctx.warn(`skipped ${u} (${lastErr?.message || 'no response'})`);
+      ctx.warn(`skipped ${u} (${lastErr ? why(lastErr) : 'no response'})`);
       continue;
     }
     const ctype = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
@@ -934,7 +991,7 @@ async function grab(inputUrl, opts = {}) {
 }
 
 module.exports = {
-  grab, classify, MODE_LABEL, HttpError, CancelledError, SITE_ADAPTERS, readHistory, HISTORY_PATH,
+  grab, classify, MODE_LABEL, HttpError, CancelledError, SITE_ADAPTERS, readHistory, HISTORY_PATH, why,
   // exported for tests
   _internal: {
     safeName, cleanTitle, numTag, parseEpisodeSpec, largestFromSrcset,

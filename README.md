@@ -25,6 +25,7 @@ Some sites are JS-rendered shells over a data API. Those get an adapter in `site
 |---|---|---|
 | bobandgeorge.com | one CBZ per year (2000–2007), or per storyline with `-g storyline` (136 files, `Series - 001 - Arc title.cbz`) |
 | any ComicControl site (shortpacked.com, egscomics.com, streetfightercomics.com, marycagle.com, …) | picks its own split unless told: `-g chapter` (from page slugs), `-g year`, `-g all` | detected from page markup, not the URL. Finds the archive at `/<comic>/archive` or `/comic/archive`, so domains hosting several comics work — give it a URL from the comic you want | detected from the page markup (`img#cc-comic`), not the URL; reads the full strip list from `/comic/archive`, then visits each strip page to find its image | pulls the full index from `getData.php`; pages are named by strip date; storyline titles go in ComicInfo Summary; html strips contribute their comic frames as pages; video/flash strips get a placeholder page in the CBZ and the file itself is saved to `extras/` next to the CBZs |
+| mangadex.org | one CBZ per chapter (default) or `-g volume` | uses the public API; give it a chapter URL for one file or a title URL for the whole series. Prefers English, falls back to all languages |
 
 `-e` selects years for adapter sites (`-e 2000-2003`). To add a site, copy `sites/bobandgeorge.js`, implement `match(url)` and `plan(ctx, url)`, and register it in `SITE_ADAPTERS` in `engine.js`.
 
@@ -72,6 +73,10 @@ test/e2e.js        spins up a mock comic site and runs the generic modes
 ```
 
 `npm test` runs the mock-site test (needs the dependencies installed).
+
+## When a site won't connect
+
+If downloads fail with `ERR_CONNECTION_RESET` / `ECONNRESET` while the site opens fine in your browser, the network is usually filtering DNS (public Wi-Fi, some routers) — browsers with iCloud Private Relay sail past the filter, apps don't. ComicGrab checks for this automatically after a reset and prints a diagnosis naming the filter when it finds one. You can verify by hand with `dig +short <hostname>`: a filtering hostname (watchguard, opendns, …) instead of plain IP addresses means it's the network, not the app.
 
 ## Library
 

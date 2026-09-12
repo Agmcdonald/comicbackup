@@ -75,6 +75,6 @@ grab(args.positionals[0], {
   group: args.values.group,
   onProgress,
 }).catch((e) => {
-  console.error(`\nerror: ${e.message}`);
+  console.error(`\nerror: ${require('./engine').why(e)}`);
   process.exit(1);
 });

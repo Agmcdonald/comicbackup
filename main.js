@@ -161,6 +161,11 @@ ipcMain.handle('showInFolder', (_e, p) => {
 });
 
 // --- lifecycle -------------------------------------------------------------
+// Chromium negotiates HTTP/3 by default and some CDNs reset the connection
+// (ERR_QUIC_PROTOCOL_ERROR). Browsers silently fall back to HTTP/2; net.fetch
+// doesn't, so turn QUIC off for the whole app.
+app.commandLine.appendSwitch('disable-quic');
+
 app.whenReady().then(() => {
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

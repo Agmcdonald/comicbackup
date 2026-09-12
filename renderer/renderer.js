@@ -76,7 +76,7 @@ function onProgress(ev) {
       log(ev.msg);
       break;
     case 'warn':
-      log(ev.msg, 'warn');
+      log(ev.msg, ev.diagnosis ? 'err' : 'warn');
       break;
     case 'done':
       els.status.textContent = ev.msg;
