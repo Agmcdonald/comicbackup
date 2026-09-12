@@ -137,7 +137,10 @@ ipcMain.handle('groupOptions', (_e, url) => {
     // offer their split options and let the engine decide once it sees the page.
     if (/(^|\.)webtoons?\.com$/i.test(new URL(u).hostname)) return null; // built-in mode, not an adapter
     const dom = SITE_ADAPTERS.filter((x) => x.matchDom && x.groups);
-    if (dom.length === 1) return { site: dom[0].name, groups: dom[0].groups, defaultGroup: dom[0].defaultGroup, maybe: true };
+    if (dom.length) {
+      const groups = [...new Set(dom.flatMap((x) => x.groups))];
+      return { site: 'a supported', groups, defaultGroup: 'auto', maybe: true };
+    }
     return null;
   } catch { return null; }
 });

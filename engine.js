@@ -27,6 +27,7 @@ const SITE_ADAPTERS = [
   require('./sites/bobandgeorge'),
   require('./sites/comiccontrol'),  // matches on page markup, not URL
   require('./sites/mangadex'),
+  require('./sites/comiceasel'),    // matches on page markup, not URL
 ];
 
 // --- tuning ----------------------------------------------------------------
